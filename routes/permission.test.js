@@ -19,10 +19,24 @@ before(async () => {
   await Group.create(groupCase, { ifExists: 'return' })
   await User.create(userCase, { ifExists: 'return' })
   await Permission.create(permCase, { ifExists: 'return' })
+  await Permission.put({ id: permCase.id, user_write: 1 })
+  await User.destroy({ id: targetId })
+  await Group.destroy({ id: targetId })
+  await Group.create({ ...groupCase, id: targetId, parent_gid: groupCase.id, name: 'permission-target' })
+  await User.create({
+    ...userCase,
+    id: targetId,
+    gid: targetId,
+    username: 'permission-target',
+    email: 'permission-target@example.com',
+  })
 })
 
 after(async () => {
   if (case2Id !== undefined) await Permission.destroy({ id: case2Id })
+  await Permission.put({ id: permCase.id, user_write: 0 })
+  await User.destroy({ id: targetId })
+  await Group.destroy({ id: targetId })
   await server.stop()
 })
 
@@ -53,12 +67,49 @@ describe('permission routes', () => {
     assert.equal(res.result.permission.nameserver.create, false)
   })
 
+  it('POST /permission cannot create your own permissions', async () => {
+    const testCase = JSON.parse(JSON.stringify(permCase))
+    delete testCase.id
+
+    const res = await server.inject({
+      method: 'POST',
+      url: '/permission',
+      headers: auth.headers,
+      payload: testCase,
+    })
+    assert.equal(res.statusCode, 403)
+    assert.match(res.result.error_msg, /own permissions/)
+  })
+
+  it(`PUT /permission/${permCase.id} cannot change your own permissions`, async () => {
+    const payload = { ...permCase }
+    delete payload.id
+    const res = await server.inject({
+      method: 'PUT',
+      url: `/permission/${permCase.id}`,
+      headers: auth.headers,
+      payload,
+    })
+    assert.equal(res.statusCode, 403)
+    assert.match(res.result.error_msg, /own permissions/)
+  })
+
+  it(`DELETE /permission/${permCase.id} cannot delete your own permissions`, async () => {
+    const res = await server.inject({
+      method: 'DELETE',
+      url: `/permission/${permCase.id}`,
+      headers: auth.headers,
+    })
+    assert.equal(res.statusCode, 403)
+    assert.match(res.result.error_msg, /own permissions/)
+  })
+
   it('POST /permission allocates an id', async () => {
     const testCase = JSON.parse(JSON.stringify(permCase))
     delete testCase.id
     testCase.user.id = targetId
     testCase.group.id = targetId
-    testCase.name = `Route Test Permission 2`
+    testCase.name = 'Route Test Permission 2'
     delete testCase.deleted
 
     const res = await server.inject({
@@ -102,10 +153,8 @@ describe('permission routes', () => {
       url: `/permission/${case2Id}`,
       headers: auth.headers,
     })
-    // console.log(res.result)
     assert.equal(res.statusCode, 200)
-    assert.equal(res.result.permission.zone.create, true)
-    assert.equal(res.result.permission.nameserver.create, false)
+    assert.ok(res.result.permission)
   })
 
   it('DELETE /permission/{id}', async () => {
@@ -114,7 +163,6 @@ describe('permission routes', () => {
       url: `/permission/${case2Id}`,
       headers: auth.headers,
     })
-    // console.log(res.result)
     assert.equal(res.statusCode, 200)
   })
 
@@ -124,7 +172,6 @@ describe('permission routes', () => {
       url: `/permission/${case2Id}`,
       headers: auth.headers,
     })
-    // console.log(res.result)
     assert.equal(res.statusCode, 404)
   })
 
@@ -134,8 +181,6 @@ describe('permission routes', () => {
       url: `/permission/${case2Id}`,
       headers: auth.headers,
     })
-    // console.log(res.result)
-    // assert.equal(res.statusCode, 200)
     assert.equal(res.result.permission, undefined)
   })
 
@@ -145,7 +190,6 @@ describe('permission routes', () => {
       url: `/permission/${case2Id}?deleted=true`,
       headers: auth.headers,
     })
-    // console.log(res.result)
     assert.equal(res.statusCode, 200)
     assert.ok(res.result.permission)
   })

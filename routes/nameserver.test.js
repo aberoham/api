@@ -7,21 +7,27 @@ import User from '../lib/user/index.js'
 import Nameserver from '../lib/nameserver/index.js'
 
 import groupCase from './test/group.json' with { type: 'json' }
+import { grantGroupPermissions } from './test/permissions.js'
 import userCase from './test/user.json' with { type: 'json' }
 import nsCase from './test/nameserver.json' with { type: 'json' }
 
 let server
 let case2Id
+const moveGroup = { id: 4090, parent_gid: groupCase.id, name: 'ns-move.route.example.com' }
 
 before(async () => {
+  await Group.destroy({ id: moveGroup.id })
   await Group.create(groupCase, { ifExists: 'return' })
+  await Group.create(moveGroup)
   await User.create(userCase, { ifExists: 'return' })
+  await grantGroupPermissions(groupCase.id)
   await Nameserver.create(nsCase, { ifExists: 'return' })
   server = await init()
 })
 
 after(async () => {
   if (case2Id) await Nameserver.destroy({ id: case2Id })
+  await Group.destroy({ id: moveGroup.id })
   await server.stop()
 })
 
@@ -50,6 +56,26 @@ describe('nameserver routes', () => {
     // console.log(res.result)
     assert.equal(res.statusCode, 200)
     assert.equal(res.result.nameserver[0].name, nsCase.name)
+  })
+
+  it(`PUT /nameserver/${nsCase.id} moves it to another group`, async () => {
+    const moved = await server.inject({
+      method: 'PUT',
+      url: `/nameserver/${nsCase.id}`,
+      headers: auth.headers,
+      payload: { gid: moveGroup.id },
+    })
+    assert.equal(moved.statusCode, 200)
+    assert.equal(moved.result.nameserver[0].gid, moveGroup.id)
+
+    const restored = await server.inject({
+      method: 'PUT',
+      url: `/nameserver/${nsCase.id}`,
+      headers: auth.headers,
+      payload: { gid: groupCase.id },
+    })
+    assert.equal(restored.statusCode, 200)
+    assert.equal(restored.result.nameserver[0].gid, groupCase.id)
   })
 
   it('POST /nameserver allocates an id', async () => {
