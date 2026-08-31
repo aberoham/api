@@ -1196,6 +1196,12 @@ describe('authz plugin - delegation type and pseudo access', () => {
       perm_delegate: false,
     })
     try {
+      const [delegation] = await Delegation.get({
+        gid: G_OUTSIDE.id,
+        type: 'ZONERECORD',
+      })
+      assert.equal(delegation.nt_zone_id, Z_INTREE.id)
+
       const res = await server.inject({
         method: 'GET',
         url: `/zone/${Z_INTREE.id}`,
