@@ -75,6 +75,7 @@ before(async () => {
   await Zone.destroy({ id: delegatedZoneId })
   await Group.destroy({ id: delegatedGroupId })
   await ZoneRecord.destroy({ id: testZoneRecordId })
+  await ZoneRecord.destroy({ id: bystanderId })
   await ZoneRecord.destroy({ id: deletedParentRecordId })
   await Zone.destroy({ id: testZoneId })
 
@@ -131,7 +132,9 @@ after(async () => {
   await ZoneRecord.destroy({ id: bystanderId })
   await ZoneRecord.destroy({ id: deletedParentRecordId })
   await Zone.destroy({ id: testZoneId })
+  // a failed before() leaves no server, and an open db connection keeps node running
   if (server) await server.stop()
+  else await ZoneRecord.disconnect()
 })
 
 describe('zone_record routes', () => {
