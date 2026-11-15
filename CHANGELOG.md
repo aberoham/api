@@ -29,6 +29,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - fix: a token is valid only while its session row exists, so logout revokes it, and any authenticated request counts as activity
 - fix: destroying a group, user or zone on json or toml takes its nameservers, sessions or records with it, as mysql does
 - fix: moving a user moves their permission rows to the new group
+- audit: enforce route-specific queries and file-store exact matching
+- session: validate qualified usernames and permission responses
+- user: add subgroup group-name sorting and reject unknown writes
+- group/zone: validate permission controls and zone serial updates
+- authz: a group change needs the owning tree, delegates edit in place
+- zone_record: sort by the legacy rdata columns
+- session: a failed activity touch no longer rejects unhandled
 
 ### [3.0.3] - 2026-07-27
 

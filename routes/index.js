@@ -17,6 +17,9 @@ import { Permission, PermissionRoutes } from './permission.js'
 import { NameserverRoutes } from './nameserver.js'
 import { ZoneRoutes } from './zone.js'
 import { ZoneRecordRoutes } from './zone_record.js'
+import { DelegationRoutes } from './delegation.js'
+import { LogRoutes } from './log.js'
+import authzPlugin from '../lib/authz-plugin.js'
 
 let server
 
@@ -112,6 +115,8 @@ async function setup() {
       .code(409)
   })
 
+  await server.register(authzPlugin)
+
   server.route({
     method: 'GET',
     path: '/',
@@ -127,6 +132,8 @@ async function setup() {
   NameserverRoutes(server)
   ZoneRoutes(server)
   ZoneRecordRoutes(server)
+  DelegationRoutes(server)
+  LogRoutes(server)
 
   server.route({
     method: '*',
