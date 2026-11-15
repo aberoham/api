@@ -165,7 +165,8 @@ describe('permission routes', () => {
       headers: auth.headers,
     })
     assert.equal(res.statusCode, 200)
-    assert.ok(res.result.permission)
+    assert.equal(res.result.permission.zone.create, true)
+    assert.equal(res.result.permission.nameserver.create, false)
   })
 
   it('DELETE /permission/{id}', async () => {
