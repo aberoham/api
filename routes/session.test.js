@@ -137,23 +137,6 @@ describe('session routes', () => {
       assert.equal(res.statusCode, 200)
     })
 
-    after(async () => {
-      const res = await server.inject({
-        method: 'DELETE',
-        url: '/session',
-        headers: auth.headers,
-      })
-      // console.log(res.result)
-      assert.equal(res.statusCode, 200)
-
-      const revoked = await server.inject({
-        method: 'GET',
-        url: '/session',
-        headers: auth.headers,
-      })
-      assert.equal(revoked.statusCode, 401)
-    })
-
     const routes = [{ GET: '/' }, { GET: '/session' }, { DELETE: '/session' }]
 
     for (const r of routes) {

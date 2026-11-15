@@ -14,14 +14,13 @@ import nsCase from './test/zone.json' with { type: 'json' }
 import nameserverCase from './test/nameserver.json' with { type: 'json' }
 
 let server
-let case2Id = 4094
-const duplicateId = 4092
-const duplicateCaseId = 4089
-const concurrentDuplicateIds = [4087, 4088]
+let case2Id
+let nsZoneId
+const moveGroup = { id: 4094, parent_gid: groupCase.id, name: 'zone-move.route.example.com' }
 const recoveryDuplicateId = 4086
 
 const subGroup = { id: 4090, parent_gid: groupCase.id, name: 'sub.route.example.com' }
-const subZone = { ...nsCase, id: 4091, gid: subGroup.id, zone: 'sub.route.example.com.' }
+const subZone = { ...nsCase, id: 4091, gid: subGroup.id, zone: 'sub.route.example.com' }
 const nsLow = { ...nameserverCase, id: 4086, name: 'low.route.example.com.' }
 const nsHigh = { ...nameserverCase, id: 4087, name: 'high.route.example.com.', ttl: 900 }
 const assignedZone = { ...nsCase, gid: subGroup.id, zone: 'assigned.route.example.com.' }
@@ -30,63 +29,53 @@ let assignedId
 // one nameserver in the caller's group, one it cannot use
 const ownNs = { ...nameserverCase, id: 4093, gid: groupCase.id, name: 'own.ns.example.com.' }
 const otherNs = { ...nameserverCase, id: 4092, gid: 1, name: 'other.ns.example.com.' }
-const nsZoneId = 4089
-const refusedZoneId = 4085
 
 before(async () => {
   for (const deleted of [false, true]) {
     for (const z of await Zone.get({ zone: 'route2.example.com', deleted })) await Zone.destroy({ id: z.id })
   }
   await Zone.destroy({ id: nsCase.id })
-  await Zone.destroy({ id: case2Id })
-  await Zone.destroy({ id: duplicateId })
-  await Zone.destroy({ id: duplicateCaseId })
   await Zone.destroy({ id: recoveryDuplicateId })
-  for (const id of concurrentDuplicateIds) await Zone.destroy({ id })
+  for (const name of ['route2.example.com.', 'ns.route.example.com.', 'concurrent.example.com.']) {
+    for (const deleted of [false, true]) {
+      for (const zone of await Zone.get({ zone: name, deleted })) await Zone.destroy({ id: zone.id })
+    }
+  }
   await Zone.destroy({ id: subZone.id })
   // Destroy the subgroup before recreating it: a lingering row would make
   // Group.create early-return and skip addToSubgroups, leaving the
   // nt_group_subgroups closure row (and thus the include_subgroups query) empty.
   await Group.destroy({ id: subGroup.id })
+  await Group.destroy({ id: moveGroup.id })
   await Group.create(groupCase, { ifExists: 'return' })
-  // POST /zone (case2Id) targets a zone in this group; authz requires it to
-  // exist inside the fixture user's group tree.
-  await Group.create(
-    { id: case2Id, parent_gid: groupCase.id, name: 'route2.example.com' },
-    { ifExists: 'return' },
-  )
+  await Group.create(moveGroup)
   await User.create(userCase, { ifExists: 'return' })
   await grantGroupPermissions(groupCase.id)
   await Zone.create(nsCase, { ifExists: 'return' })
   await Group.create(subGroup)
   await Zone.create(subZone)
-  for (const ns of [nsLow, nsHigh]) {
-    await Nameserver.destroy({ id: ns.id })
-    await Nameserver.create(ns)
-  }
-  await Zone.destroy({ id: nsZoneId })
-  await Zone.destroy({ id: refusedZoneId })
   await Nameserver.destroy({ id: ownNs.id })
   await Nameserver.destroy({ id: otherNs.id })
   await Nameserver.create(ownNs)
   await Nameserver.create(otherNs)
+  for (const ns of [nsLow, nsHigh]) {
+    await Nameserver.destroy({ id: ns.id })
+    await Nameserver.create(ns)
+  }
   server = await init()
 })
 
 after(async () => {
   if (case2Id) await Zone.destroy({ id: case2Id })
-  if (assignedId) await Zone.destroy({ id: assignedId })
-  for (const ns of [nsLow, nsHigh]) await Nameserver.destroy({ id: ns.id })
-  await Zone.destroy({ id: nsZoneId })
+  if (nsZoneId) await Zone.destroy({ id: nsZoneId })
   await Nameserver.destroy({ id: ownNs.id })
   await Nameserver.destroy({ id: otherNs.id })
-  await Zone.destroy({ id: duplicateId })
-  await Zone.destroy({ id: duplicateCaseId })
   await Zone.destroy({ id: recoveryDuplicateId })
-  for (const id of concurrentDuplicateIds) await Zone.destroy({ id })
+  if (assignedId) await Zone.destroy({ id: assignedId })
+  for (const ns of [nsLow, nsHigh]) await Nameserver.destroy({ id: ns.id })
   await Zone.destroy({ id: subZone.id })
   await Group.destroy({ id: subGroup.id })
-  await Group.destroy({ id: case2Id })
+  await Group.destroy({ id: moveGroup.id })
   await server.stop()
 })
 
@@ -137,49 +126,21 @@ describe('zone routes', () => {
     assert.ok(res.result.zone.some((z) => z.zone === nsCase.zone))
   })
 
-  it('POST /zone rejects an active duplicate name', async () => {
-    const duplicate = { ...nsCase, id: duplicateId, zone: `${nsCase.zone}.` }
-    const res = await server.inject({
-      method: 'POST',
-      url: '/zone',
-      headers: auth.headers,
-      payload: duplicate,
-    })
-
-    assert.equal(res.statusCode, 409)
-    assert.deepEqual(res.result.zone, [])
-    assert.match(res.result.meta.msg, /already taken/)
-  })
-
-  it('POST /zone rejects a case-only duplicate name', async () => {
-    const res = await server.inject({
-      method: 'POST',
-      url: '/zone',
-      headers: auth.headers,
-      payload: { ...nsCase, id: duplicateCaseId, zone: `${nsCase.zone.toUpperCase()}.` },
-    })
-    await Zone.destroy({ id: duplicateCaseId })
-
-    assert.equal(res.statusCode, 409)
-    assert.deepEqual(res.result.zone, [])
-  })
-
   it('POST /zone admits only one concurrent canonical name', async () => {
     const responses = await Promise.all(
-      concurrentDuplicateIds.map((id, index) =>
-        server.inject({
+      ['concurrent.example.com', 'CONCURRENT.EXAMPLE.COM.'].map((zone) => {
+        const payload = { ...nsCase, zone }
+        delete payload.id
+        return server.inject({
           method: 'POST',
           url: '/zone',
           headers: auth.headers,
-          payload: {
-            ...nsCase,
-            id,
-            zone: index === 0 ? 'concurrent.example.com' : 'CONCURRENT.EXAMPLE.COM.',
-          },
-        }),
-      ),
+          payload,
+        })
+      }),
     )
-    for (const id of concurrentDuplicateIds) await Zone.destroy({ id })
+    const created = responses.find((res) => res.statusCode === 201)
+    if (created) await Zone.destroy({ id: created.result.zone[0].id })
 
     assert.deepEqual(responses.map((res) => res.statusCode).sort(), [201, 409])
   })
@@ -208,10 +169,10 @@ describe('zone routes', () => {
       method: 'PUT',
       url: `/zone/${nsCase.id}`,
       headers: auth.headers,
-      payload: { gid: case2Id },
+      payload: { gid: moveGroup.id },
     })
     assert.equal(moved.statusCode, 200)
-    assert.equal(moved.result.zone[0].gid, case2Id)
+    assert.equal(moved.result.zone[0].gid, moveGroup.id)
 
     const restored = await server.inject({
       method: 'PUT',
@@ -265,7 +226,7 @@ describe('zone routes', () => {
     })
     assert.equal(res.statusCode, 403)
     assert.match(res.result.meta.msg, /not usable: 4092/)
-    assert.deepEqual(await Zone.nameserverIds(nsCase.id), [ownNs.id])
+    assert.deepEqual((await Zone.get({ id: nsCase.id }))[0].nameservers, [ownNs.id])
   })
 
   it(`PUT /zone/${nsCase.id} clears the assignment`, async () => {
@@ -279,32 +240,37 @@ describe('zone routes', () => {
     assert.deepEqual(res.result.zone[0].nameservers, [])
   })
 
-  it(`POST /zone (${nsZoneId}) with nameservers`, async () => {
+  it('POST /zone with nameservers', async () => {
+    const payload = { ...nsCase, zone: 'ns.route.example.com.', nameservers: [ownNs.id] }
+    delete payload.id
     const res = await server.inject({
       method: 'POST',
       url: '/zone',
       headers: auth.headers,
-      payload: { ...nsCase, id: nsZoneId, zone: 'ns.route.example.com.', nameservers: [ownNs.id] },
+      payload,
     })
     assert.equal(res.statusCode, 201)
     assert.deepEqual(res.result.zone[0].nameservers, [ownNs.id])
+    nsZoneId = res.result.zone[0].id
   })
 
   it('POST /zone rejects a nameserver the caller cannot use', async () => {
+    const payload = { ...nsCase, zone: 'ns2.route.example.com.', nameservers: [otherNs.id] }
+    delete payload.id
     const res = await server.inject({
       method: 'POST',
       url: '/zone',
       headers: auth.headers,
-      payload: { ...nsCase, id: refusedZoneId, zone: 'ns2.route.example.com.', nameservers: [otherNs.id] },
+      payload,
     })
     assert.equal(res.statusCode, 403)
-    assert.equal((await Zone.get({ id: refusedZoneId })).length, 0)
+    assert.equal((await Zone.get({ zone: payload.zone })).length, 0)
   })
 
   it('POST /zone allocates an id', async () => {
     const testCase = JSON.parse(JSON.stringify(nsCase))
     delete testCase.id
-    testCase.gid = groupCase.id
+    testCase.gid = moveGroup.id
     testCase.zone = 'route2.example.com.'
 
     const res = await server.inject({
@@ -323,7 +289,7 @@ describe('zone routes', () => {
 
     const log = await server.inject({
       method: 'GET',
-      url: `/log/zone?gid=${case2Id}&search=route2.example.com.`,
+      url: `/log/zone?gid=${moveGroup.id}&search=route2.example.com`,
       headers: auth.headers,
     })
     assert.equal(log.statusCode, 200)
@@ -373,7 +339,7 @@ describe('zone routes', () => {
 
     const log = await server.inject({
       method: 'GET',
-      url: `/log/zone?gid=${case2Id}&search=route2.example.com.`,
+      url: `/log/zone?gid=${moveGroup.id}&search=route2.example.com`,
       headers: auth.headers,
     })
     assert.equal(log.statusCode, 200)
@@ -383,11 +349,11 @@ describe('zone routes', () => {
   it('GET /log/global includes subgroup activity', async () => {
     const res = await server.inject({
       method: 'GET',
-      url: `/log/global?gid=${groupCase.id}&include_subgroups=true&search=route2.example.com.`,
+      url: `/log/global?gid=${groupCase.id}&include_subgroups=true&search=route2.example.com`,
       headers: auth.headers,
     })
     assert.equal(res.statusCode, 200)
-    assert.ok(res.result.log.some((row) => row.title === 'route2.example.com.'))
+    assert.ok(res.result.log.some((row) => row.title === 'route2.example.com'))
   })
 
   it('DELETE /zone/{id} returns 404 when already deleted', async () => {

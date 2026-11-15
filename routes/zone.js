@@ -1,7 +1,6 @@
 import validate from '@nictool/validate'
 
 import Zone from '../lib/zone/index.js'
-import { ZoneNameConflictError } from '../lib/zone/store/base.js'
 import Group from '../lib/group/index.js'
 import Authz from '../lib/authz/index.js'
 import Permission from '../lib/permission/index.js'
@@ -52,12 +51,6 @@ async function unusableNameservers(request) {
 
 function nameserversNotUsable(h, ids) {
   return h.response({ meta: { api: meta.api, msg: `nameserver(s) not usable: ${ids.join(', ')}` } }).code(403)
-}
-
-// single-zone responses carry the assignment; lists stay one query
-async function withNameservers(zones) {
-  for (const zone of zones) zone.nameservers = await Zone.nameserverIds(zone.id)
-  return zones
 }
 
 function ZoneRoutes(server) {
@@ -136,7 +129,6 @@ function ZoneRoutes(server) {
           Zone.count(countArgs),
           Zone.count(totalArgs),
         ])
-        if (getArgs.id) await withNameservers(zones)
 
         return h
           .response({
@@ -175,15 +167,9 @@ function ZoneRoutes(server) {
         const unusable = await unusableNameservers(request)
         if (unusable.length) return nameserversNotUsable(h, unusable)
 
-        let id
-        try {
-          id = await Zone.create(zone)
-        } catch (err) {
-          if (err instanceof ZoneNameConflictError) return zoneNameConflict(h)
-          throw err
-        }
+        const id = await Zone.create(zone)
 
-        const zones = await withNameservers(await Zone.get({ id }))
+        const zones = await Zone.get({ id })
         await Audit.logZone(request.auth.credentials.user, 'added', zones[0])
 
         return h
@@ -232,16 +218,10 @@ function ZoneRoutes(server) {
         const payload = Object.fromEntries(
           Object.entries(request.payload).filter(([key]) => ZONE_PUT_FIELDS.has(key)),
         )
-        try {
-          await Zone.put({ id, ...payload })
-        } catch (err) {
-          if (err instanceof ZoneNameConflictError) return zoneNameConflict(h)
-          throw err
-        }
+        await Zone.put({ ...payload, id })
 
         let updated = await Zone.get({ id })
         if (updated.length === 0) updated = await Zone.get({ id, deleted: true })
-        await withNameservers(updated)
         await Audit.logZone(
           request.auth.credentials.user,
           zoneAuditAction(zones[0], payload),
@@ -330,15 +310,6 @@ function zoneAuditAction(previous, payload) {
   if (payload.deleted === false && previous.deleted === true) return 'recovered'
   if (payload.gid !== undefined && payload.gid !== previous.gid) return 'moved'
   return 'modified'
-}
-
-function zoneNameConflict(h) {
-  return h
-    .response({
-      zone: [],
-      meta: { api: meta.api, msg: `Zone is already taken` },
-    })
-    .code(409)
 }
 
 export default ZoneRoutes
